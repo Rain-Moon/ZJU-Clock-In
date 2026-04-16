@@ -37,11 +37,17 @@ class DaKa(object):
     def login(self):
         """Login to ZJU platform"""
         res = self.sess.get(self.login_url, headers=self.headers)
-        execution = re.search(
-            'name="execution" value="(.*?)"', res.text).group(1)
-        res = self.sess.get(
+        match = re.search('name="execution" value="(.*?)"', res.text)
+        if match:
+            execution = match.group(1)
+        else:
+            raise RegexMatchError("未能在登录页面找到 execution 字段，页面结构可能已更新或服务异常。")
+        res_json = self.sess.get(
             url='https://zjuam.zju.edu.cn/cas/v2/getPubKey', headers=self.headers).json()
-        n, e = res['modulus'], res['exponent']
+        n = res_json.get('modulus')
+        e = res_json.get('exponent')
+        if not n or not e:
+            raise RegexMatchError("未获取到加密公钥参数，登录接口返回异常。")
         encrypt_password = self._rsa_encrypt(self.password, e, n)
 
         data = {
@@ -75,19 +81,36 @@ class DaKa(object):
 
         try:
             old_infos = re.findall(r'oldInfo: ({[^\n]+})', html)
-            if len(old_infos) != 0:
+            if old_infos:
                 old_info = json.loads(old_infos[0])
             else:
                 raise RegexMatchError("未发现缓存信息，请先至少手动成功打卡一次再运行脚本")
 
-            new_info_tmp = json.loads(re.findall(r'def = ({[^\n]+})', html)[0])
-            new_id = new_info_tmp['id']
-            name = re.findall(r'realname: "([^\"]+)",', html)[0]
-            number = re.findall(r"number: '([^\']+)',", html)[0]
+            def_info = re.findall(r'def = ({[^\n]+})', html)
+            if def_info:
+                new_info_tmp = json.loads(def_info[0])
+            else:
+                raise RegexMatchError("页面未找到 def 信息，请检查页面结构是否更新。")
+            if 'id' in new_info_tmp:
+                new_id = new_info_tmp['id']
+            else:
+                raise RegexMatchError("def 信息中未包含 id 字段，可能是页面结构变更")
+
+            name_match = re.search(r'realname: "([^\"]+)",', html)
+            if name_match:
+                name = name_match.group(1)
+            else:
+                raise RegexMatchError("未能找到姓名信息，请检查页面结构或手动打卡后重试。")
+
+            number_match = re.search(r"number: '([^\']+)',", html)
+            if number_match:
+                number = number_match.group(1)
+            else:
+                raise RegexMatchError("未能找到学号信息，请检查页面结构或手动打卡后重试。")
         except IndexError:
-            raise RegexMatchError('Relative info not found in html with regex')
+            raise RegexMatchError('页面结构解析 IndexError，匹配结果为空。')
         except json.decoder.JSONDecodeError:
-            raise DecodeError('JSON decode error')
+            raise DecodeError('JSON 解码错误，请联系维护者。')
 
         new_info = old_info.copy()
         new_info['id'] = new_id
@@ -171,7 +194,7 @@ def main(username, password):
         if str(res['e']) == '0':
             print('已为您打卡成功！')
         else:
-            print(res['m'])
+            print(res.get('m', '打卡接口返回未知结果'))
     except Exception:
         print('数据提交失败')
         raise Exception
